@@ -1,13 +1,13 @@
-import sgMail from "@sendgrid/mail";
+// import sgMail from "@sendgrid/mail";
 import type { AppointmentEmailPayload } from "./appointment-service.js";
 
-const sendGridApiKey = process.env.SENDGRID_API_KEY;
-const mailFromEmail = process.env.SENDGRID_FROM_EMAIL ?? process.env.MAIL_FROM;
-const mailFromName = process.env.SENDGRID_FROM_NAME ?? "Restate Appointment";
+// const sendGridApiKey = process.env.SENDGRID_API_KEY;
+// const mailFromEmail = process.env.SENDGRID_FROM_EMAIL ?? process.env.MAIL_FROM;
+// const mailFromName = process.env.SENDGRID_FROM_NAME ?? "Restate Appointment";
 
-if (sendGridApiKey) {
-  sgMail.setApiKey(sendGridApiKey);
-}
+// if (sendGridApiKey) {
+//   sgMail.setApiKey(sendGridApiKey);
+// }
 
 export type EmailSendResult =
   | { sent: true }
@@ -83,73 +83,81 @@ async function sendAppointmentEmail(message: {
   subject: string;
   text: string;
 }): Promise<EmailSendResult> {
-  if (!sendGridApiKey || !mailFromEmail) {
-    console.info("SendGrid env is missing; email skipped", {
-      to: message.to,
-      subject: message.subject,
-      hasApiKey: Boolean(sendGridApiKey),
-      hasFromEmail: Boolean(mailFromEmail),
-    });
-    return {
-      sent: false,
-      reason: "SendGrid env is missing",
-    };
-  }
-
-  try {
-    await sgMail.send({
-      from: {
-        email: mailFromEmail,
-        name: mailFromName,
-      },
-      ...message,
-    });
-  } catch (error) {
-    const sendGridError = toSendGridError(error);
-    console.error("SendGrid email failed", {
-      to: message.to,
-      subject: message.subject,
-      statusCode: sendGridError.statusCode,
-      response: sendGridError.responseBody,
-    });
-
-    if (sendGridError.statusCode === 401 || sendGridError.statusCode === 403) {
-      return {
-        sent: false,
-        reason: "SendGrid authentication failed",
-        statusCode: sendGridError.statusCode,
-        responseBody: sendGridError.responseBody,
-      };
-    }
-
-    throw error;
-  }
-
-  console.info("SendGrid email sent", {
+  console.info("Mock appointment email sent", {
     to: message.to,
     subject: message.subject,
+    text: message.text,
   });
   return { sent: true };
+
+  // Code cu gui SendGrid, tam comment de chi log ra console.
+  // if (!sendGridApiKey || !mailFromEmail) {
+  //   console.info("SendGrid env is missing; email skipped", {
+  //     to: message.to,
+  //     subject: message.subject,
+  //     hasApiKey: Boolean(sendGridApiKey),
+  //     hasFromEmail: Boolean(mailFromEmail),
+  //   });
+  //   return {
+  //     sent: false,
+  //     reason: "SendGrid env is missing",
+  //   };
+  // }
+
+  // try {
+  //   await sgMail.send({
+  //     from: {
+  //       email: mailFromEmail,
+  //       name: mailFromName,
+  //     },
+  //     ...message,
+  //   });
+  // } catch (error) {
+  //   const sendGridError = toSendGridError(error);
+  //   console.error("SendGrid email failed", {
+  //     to: message.to,
+  //     subject: message.subject,
+  //     statusCode: sendGridError.statusCode,
+  //     response: sendGridError.responseBody,
+  //   });
+
+  //   if (sendGridError.statusCode === 401 || sendGridError.statusCode === 403) {
+  //     return {
+  //       sent: false,
+  //       reason: "SendGrid authentication failed",
+  //       statusCode: sendGridError.statusCode,
+  //       responseBody: sendGridError.responseBody,
+  //     };
+  //   }
+
+  //   throw error;
+  // }
+
+  // console.info("SendGrid email sent", {
+  //   to: message.to,
+  //   subject: message.subject,
+  // });
+  // return { sent: true };
 }
 
-function toSendGridError(error: unknown) {
-  if (typeof error === "object" && error !== null) {
-    const candidate = error as {
-      code?: number;
-      response?: {
-        statusCode?: number;
-        body?: unknown;
-      };
-    };
+// function toSendGridError(error: unknown) {
+//   if (typeof error === "object" && error !== null) {
+//     const candidate = error as {
+//       code?: number;
+//       response?: {
+//         statusCode?: number;
+//         body?: unknown;
+//       };
+//     };
 
-    return {
-      statusCode: candidate.code ?? candidate.response?.statusCode,
-      responseBody: candidate.response?.body,
-    };
-  }
+//     return {
+//       statusCode: candidate.code ?? candidate.response?.statusCode,
+//       responseBody: candidate.response?.body,
+//     };
+//   }
 
-  return {
-    statusCode: undefined,
-    responseBody: undefined,
-  };
-}
+//   return {
+//     statusCode: undefined,
+//     responseBody: undefined,
+//   };
+// }
