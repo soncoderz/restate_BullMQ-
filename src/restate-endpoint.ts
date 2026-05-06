@@ -1,9 +1,11 @@
 import * as restateFetch from "@restatedev/restate-sdk/fetch";
-import {
-  appointmentEmailService,
-  appointmentObject,
-} from "./appointment-service.js";
+import { appointmentObject } from "./appointment-service.js";
+
+const restateIdentityKeys = process.env.RESTATE_IDENTITY_KEYS?.split(",")
+  .map((key) => key.trim())
+  .filter(Boolean);
 
 export const restateEndpoint = restateFetch.createEndpointHandler({
-  services: [appointmentObject, appointmentEmailService],
+  services: [appointmentObject],
+  identityKeys: restateIdentityKeys?.length ? restateIdentityKeys : undefined,
 });

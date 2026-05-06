@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { serve } from "@hono/node-server";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { Hono } from "hono";
@@ -32,6 +33,7 @@ app.get("/", (c) =>
     restateEndpoint: "/restate",
     api: {
       createAppointment: "POST /api/appointments",
+      getAppointment: "GET /api/appointments/:id",
       updateAppointment: "PUT /api/appointments/:id",
       markAppointmentArrived: "POST /api/appointments/:id/arrived",
     },
@@ -59,6 +61,12 @@ app.post("/api/appointments", async (c) => {
   const appointment = await appointmentClient(appointmentId).create(appointmentInput);
 
   return c.json(appointment, 201);
+});
+
+app.get("/api/appointments/:id", async (c) => {
+  const appointment = await appointmentClient(c.req.param("id")).get();
+
+  return c.json(appointment);
 });
 
 app.put("/api/appointments/:id", async (c) => {
@@ -102,4 +110,3 @@ serve({ fetch: app.fetch, port }, (info) => {
   console.log(`Hono API listening on http://localhost:${info.port}`);
   console.log(`Register Restate endpoint: ${publicRestateEndpoint}`);
 });
-

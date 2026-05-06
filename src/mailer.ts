@@ -1,5 +1,5 @@
 import sgMail from "@sendgrid/mail";
-import type { AppointmentState } from "./appointment-service.js";
+import type { AppointmentEmailPayload } from "./appointment-service.js";
 
 const sendGridApiKey = process.env.SENDGRID_API_KEY;
 const mailFromEmail = process.env.SENDGRID_FROM_EMAIL ?? process.env.MAIL_FROM;
@@ -9,8 +9,19 @@ if (sendGridApiKey) {
   sgMail.setApiKey(sendGridApiKey);
 }
 
-export async function sendAppointmentBeforeEmail(appointment: AppointmentState) {
-  await sendAppointmentEmail({
+export type EmailSendResult =
+  | { sent: true }
+  | {
+      sent: false;
+      reason: string;
+      statusCode?: number;
+      responseBody?: unknown;
+    };
+
+export async function sendAppointmentBeforeEmail(
+  appointment: AppointmentEmailPayload,
+) {
+  return sendAppointmentEmail({
     to: appointment.customerEmail,
     subject: `Nhac lich truoc 1 phut: ${appointment.service}`,
     text: [
@@ -27,8 +38,10 @@ export async function sendAppointmentBeforeEmail(appointment: AppointmentState) 
   });
 }
 
-export async function sendAppointmentAtTimeEmail(appointment: AppointmentState) {
-  await sendAppointmentEmail({
+export async function sendAppointmentAtTimeEmail(
+  appointment: AppointmentEmailPayload,
+) {
+  return sendAppointmentEmail({
     to: appointment.customerEmail,
     subject: `Den gio hen: ${appointment.service}`,
     text: [
@@ -45,8 +58,10 @@ export async function sendAppointmentAtTimeEmail(appointment: AppointmentState) 
   });
 }
 
-export async function sendAppointmentAfterEmail(appointment: AppointmentState) {
-  await sendAppointmentEmail({
+export async function sendAppointmentAfterEmail(
+  appointment: AppointmentEmailPayload,
+) {
+  return sendAppointmentEmail({
     to: appointment.customerEmail,
     subject: `Sau gio hen 1 phut: ${appointment.service}`,
     text: [
@@ -67,7 +82,7 @@ async function sendAppointmentEmail(message: {
   to: string;
   subject: string;
   text: string;
-}) {
+}): Promise<EmailSendResult> {
   if (!sendGridApiKey || !mailFromEmail) {
     console.info("SendGrid env is missing; email skipped", {
       to: message.to,
@@ -75,7 +90,10 @@ async function sendAppointmentEmail(message: {
       hasApiKey: Boolean(sendGridApiKey),
       hasFromEmail: Boolean(mailFromEmail),
     });
-    return;
+    return {
+      sent: false,
+      reason: "SendGrid env is missing",
+    };
   }
 
   try {
@@ -96,7 +114,12 @@ async function sendAppointmentEmail(message: {
     });
 
     if (sendGridError.statusCode === 401 || sendGridError.statusCode === 403) {
-      return;
+      return {
+        sent: false,
+        reason: "SendGrid authentication failed",
+        statusCode: sendGridError.statusCode,
+        responseBody: sendGridError.responseBody,
+      };
     }
 
     throw error;
@@ -106,6 +129,7 @@ async function sendAppointmentEmail(message: {
     to: message.to,
     subject: message.subject,
   });
+  return { sent: true };
 }
 
 function toSendGridError(error: unknown) {
