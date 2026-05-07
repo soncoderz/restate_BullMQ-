@@ -5,16 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/server.ts",
+    "dev:email-worker": "tsx src/workers/email-worker.ts",
     "start": "tsx src/server.ts",
+    "start:email-worker": "tsx src/workers/email-worker.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bull-board/api": "^7.0.0",
+    "@bull-board/hono": "^7.0.0",
     "@hono/node-server": "^1.14.4",
     "@restatedev/restate-sdk": "1.13.0",
     "@restatedev/restate-sdk-clients": "1.13.0",
     "@sendgrid/mail": "^8.1.4",
+    "bullmq": "^5.76.5",
     "dotenv": "^17.4.2",
     "hono": "^4.8.12",
+    "ioredis": "^5.10.1",
     "zod": "^4.0.17"
   },
   "devDependencies": {

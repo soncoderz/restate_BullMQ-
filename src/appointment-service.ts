@@ -1,10 +1,6 @@
 import * as restate from "@restatedev/restate-sdk";
 import { z } from "zod";
-import {
-  sendAppointmentAfterEmail,
-  sendAppointmentAtTimeEmail,
-  sendAppointmentBeforeEmail,
-} from "./mailer.js";
+import { enqueueAppointmentEmail } from "./queues/email-queue.js";
 
 export const AppointmentInput = z.object({
   customerName: z.string().min(1),
@@ -27,8 +23,11 @@ const EmailDeliveryStatus = z.object({
   sent: z.boolean(),
   scheduled: z.boolean(),
   invocationId: z.string().optional(),
+  jobId: z.string().optional(),
   scheduledAt: z.string().optional(),
   scheduledFor: z.string().optional(),
+  queuedAt: z.string().optional(),
+  startedAt: z.string().optional(),
   sentAt: z.string().optional(),
   skippedAt: z.string().optional(),
   failedAt: z.string().optional(),
@@ -49,6 +48,8 @@ const AppointmentEvent = z.object({
     "marked_arrived",
     "email_scheduled",
     "email_cancelled",
+    "email_queued",
+    "email_started",
     "email_sent",
     "email_skipped",
     "email_failed",
@@ -63,6 +64,37 @@ const AppointmentEvent = z.object({
 export const AppointmentEmailPayload = AppointmentInput.extend({
   id: z.string(),
   version: z.number().int().min(1),
+});
+
+const EmailDeliveryRequest = z.object({
+  reminder: ReminderType,
+  version: z.number().int().min(1),
+  jobId: z.string().min(1),
+});
+
+const EmailDeliveryStartResult = z.object({
+  shouldSend: z.boolean(),
+  reason: z.string().optional(),
+});
+
+const EmailDeliveryResult = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("sent"),
+  }),
+  z.object({
+    status: z.literal("skipped"),
+    reason: z.string(),
+    statusCode: z.number().optional(),
+    responseBody: z.unknown().optional(),
+  }),
+  z.object({
+    status: z.literal("failed"),
+    error: z.string(),
+  }),
+]);
+
+const EmailDeliveryResultInput = EmailDeliveryRequest.extend({
+  result: EmailDeliveryResult,
 });
 
 export const AppointmentState = AppointmentInput.extend({
@@ -251,6 +283,26 @@ export const appointmentObject = restate.object({
       },
       async (ctx: restate.ObjectContext, appointment) => {
         return sendReminderEmail(ctx, "after", appointment);
+      },
+    ),
+
+    startEmailDelivery: restate.createObjectHandler(
+      {
+        input: restate.serde.schema(EmailDeliveryRequest),
+        output: restate.serde.schema(EmailDeliveryStartResult),
+      },
+      async (ctx: restate.ObjectContext, input) => {
+        return startEmailDelivery(ctx, input);
+      },
+    ),
+
+    recordEmailResult: restate.createObjectHandler(
+      {
+        input: restate.serde.schema(EmailDeliveryResultInput),
+        output: restate.serde.schema(AppointmentState),
+      },
+      async (ctx: restate.ObjectContext, input) => {
+        return recordEmailResult(ctx, input);
       },
     ),
   },
@@ -453,33 +505,34 @@ async function sendReminderEmail(
   }
 
   if (appointment.emailStatus[reminder].sent) {
-    return saveEmailSkipped(ctx, appointment, reminder, now, "email already sent");
+    return appointment;
   }
 
   try {
     const result = await ctx.run(
-      `send ${reminder} appointment email`,
-      () => sendEmailByReminder(reminder, payload),
+      `enqueue ${reminder} appointment email`,
+      () =>
+        enqueueAppointmentEmail({
+          reminder,
+          appointment: payload,
+        }),
       { maxRetryAttempts: 3 },
     );
 
-    if (!result.sent) {
-      return saveEmailSkipped(ctx, appointment, reminder, now, result.reason);
-    }
-
     appointment.emailStatus[reminder] = {
       ...appointment.emailStatus[reminder],
-      sent: true,
       scheduled: false,
-      sentAt: now,
+      jobId: result.jobId,
+      queuedAt: now,
       error: undefined,
     };
     appointment.history.push({
-      type: "email_sent",
+      type: "email_queued",
       at: now,
       version: appointment.version,
       reminder,
       invocationId: appointment.emailStatus[reminder].invocationId,
+      details: { jobId: result.jobId },
     });
     appointment.updatedAt = now;
 
@@ -499,12 +552,140 @@ async function sendReminderEmail(
       version: appointment.version,
       reminder,
       invocationId: appointment.emailStatus[reminder].invocationId,
-      details: { error: errorMessage(error) },
+      details: { error: errorMessage(error), stage: "enqueue" },
     });
     appointment.updatedAt = now;
 
     ctx.set(STATE_KEY, appointment);
     return appointment;
+  }
+}
+
+async function startEmailDelivery(
+  ctx: restate.ObjectContext,
+  input: z.infer<typeof EmailDeliveryRequest>,
+) {
+  const appointment = await requireAppointment(ctx);
+  const now = await ctx.date.toJSON();
+
+  if (appointment.version !== input.version) {
+    const reason = `stale email job version ${input.version}`;
+    saveStaleEmailSkipped(ctx, appointment, input.reminder, now, reason);
+    return { shouldSend: false, reason };
+  }
+
+  if (appointment.status === "arrived") {
+    const reason = "appointment already arrived";
+    saveEmailSkipped(ctx, appointment, input.reminder, now, reason, {
+      jobId: input.jobId,
+    });
+    return { shouldSend: false, reason };
+  }
+
+  if (appointment.emailStatus[input.reminder].sent) {
+    return { shouldSend: false, reason: "email already sent" };
+  }
+
+  appointment.emailStatus[input.reminder] = {
+    ...appointment.emailStatus[input.reminder],
+    scheduled: false,
+    jobId: input.jobId,
+    startedAt: now,
+    error: undefined,
+  };
+  appointment.history.push({
+    type: "email_started",
+    at: now,
+    version: appointment.version,
+    reminder: input.reminder,
+    invocationId: appointment.emailStatus[input.reminder].invocationId,
+    details: { jobId: input.jobId },
+  });
+  appointment.updatedAt = now;
+
+  ctx.set(STATE_KEY, appointment);
+  return { shouldSend: true };
+}
+
+async function recordEmailResult(
+  ctx: restate.ObjectContext,
+  input: z.infer<typeof EmailDeliveryResultInput>,
+) {
+  const appointment = await requireAppointment(ctx);
+  const now = await ctx.date.toJSON();
+
+  if (appointment.version !== input.version) {
+    return saveStaleEmailSkipped(
+      ctx,
+      appointment,
+      input.reminder,
+      now,
+      `stale email result version ${input.version}`,
+    );
+  }
+
+  if (appointment.emailStatus[input.reminder].sent) {
+    return appointment;
+  }
+
+  switch (input.result.status) {
+    case "sent":
+      appointment.emailStatus[input.reminder] = {
+        ...appointment.emailStatus[input.reminder],
+        sent: true,
+        scheduled: false,
+        jobId: input.jobId,
+        sentAt: now,
+        error: undefined,
+      };
+      appointment.history.push({
+        type: "email_sent",
+        at: now,
+        version: appointment.version,
+        reminder: input.reminder,
+        invocationId: appointment.emailStatus[input.reminder].invocationId,
+        details: { jobId: input.jobId },
+      });
+      appointment.updatedAt = now;
+
+      ctx.set(STATE_KEY, appointment);
+      return appointment;
+
+    case "skipped":
+      return saveEmailSkipped(
+        ctx,
+        appointment,
+        input.reminder,
+        now,
+        input.result.reason,
+        {
+          jobId: input.jobId,
+          statusCode: input.result.statusCode,
+          responseBody: input.result.responseBody,
+        },
+      );
+
+    case "failed":
+      appointment.emailStatus[input.reminder] = {
+        ...appointment.emailStatus[input.reminder],
+        sent: false,
+        scheduled: false,
+        jobId: input.jobId,
+        failedAt: now,
+        error: input.result.error,
+      };
+      appointment.history.push({
+        type: "email_failed",
+        at: now,
+        version: appointment.version,
+        reminder: input.reminder,
+        invocationId: appointment.emailStatus[input.reminder].invocationId,
+        details: { jobId: input.jobId, error: input.result.error },
+      });
+      appointment.updatedAt = now;
+
+      ctx.set(STATE_KEY, appointment);
+      return appointment;
   }
 }
 
@@ -534,6 +715,7 @@ function saveEmailSkipped(
   reminder: ReminderType,
   now: string,
   reason: string,
+  details: Record<string, unknown> = {},
 ) {
   appointment.emailStatus[reminder] = {
     ...appointment.emailStatus[reminder],
@@ -548,23 +730,12 @@ function saveEmailSkipped(
     version: appointment.version,
     reminder,
     invocationId: appointment.emailStatus[reminder].invocationId,
-    details: { reason },
+    details: { reason, ...details },
   });
   appointment.updatedAt = now;
 
   ctx.set(STATE_KEY, appointment);
   return appointment;
-}
-
-function sendEmailByReminder(reminder: ReminderType, appointment: AppointmentEmailPayload) {
-  switch (reminder) {
-    case "before":
-      return sendAppointmentBeforeEmail(appointment);
-    case "atTime":
-      return sendAppointmentAtTimeEmail(appointment);
-    case "after":
-      return sendAppointmentAfterEmail(appointment);
-  }
 }
 
 function applyScheduleResult(

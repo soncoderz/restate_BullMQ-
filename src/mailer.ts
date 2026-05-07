@@ -1,5 +1,9 @@
 // import sgMail from "@sendgrid/mail";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { AppointmentEmailPayload } from "./appointment-service.js";
+
+const MAILS_PER_REMINDER = 100;
+const MAIL_SEND_INTERVAL_MS = 1_000;
 
 // const sendGridApiKey = process.env.SENDGRID_API_KEY;
 // const mailFromEmail = process.env.SENDGRID_FROM_EMAIL ?? process.env.MAIL_FROM;
@@ -83,11 +87,20 @@ async function sendAppointmentEmail(message: {
   subject: string;
   text: string;
 }): Promise<EmailSendResult> {
-  console.info("Mock appointment email sent", {
-    to: message.to,
-    subject: message.subject,
-    text: message.text,
-  });
+  for (let index = 1; index <= MAILS_PER_REMINDER; index += 1) {
+    console.info("Mock appointment email sent", {
+      index,
+      total: MAILS_PER_REMINDER,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+    });
+
+    if (index < MAILS_PER_REMINDER) {
+      await sleep(MAIL_SEND_INTERVAL_MS);
+    }
+  }
+
   return { sent: true };
 
   // Code cu gui SendGrid, tam comment de chi log ra console.

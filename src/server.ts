@@ -1,10 +1,15 @@
 import "dotenv/config";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { createBullBoard } from "@bull-board/api";
+import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
+import { HonoAdapter } from "@bull-board/hono";
 import * as clients from "@restatedev/restate-sdk-clients";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { z } from "zod";
 import { AppointmentInput, type AppointmentObject } from "./appointment-service.js";
+import { appointmentEmailQueue } from "./queues/email-queue.js";
 import { restateEndpoint } from "./restate-endpoint.js";
 
 const port = Number(process.env.PORT ?? 9080);
@@ -12,6 +17,8 @@ const restateRuntimeUrl = process.env.RESTATE_RUNTIME_URL ?? "http://localhost:1
 const restateAuthToken = process.env.RESTATE_AUTH_TOKEN;
 const publicRestateEndpoint =
   process.env.PUBLIC_RESTATE_ENDPOINT ?? `http://localhost:${port}/restate`;
+const queueDashboardPath = process.env.QUEUE_DASHBOARD_PATH ?? "/admin/queues";
+const appointmentsPerCreateRequest = 30;
 
 const restateClient = clients.connect({
   url: restateRuntimeUrl,
@@ -23,14 +30,17 @@ const restateClient = clients.connect({
 });
 
 const app = new Hono();
+const queueDashboard = createQueueDashboard(queueDashboardPath);
 
 app.use(logger());
+app.route(queueDashboardPath, queueDashboard);
 
 app.get("/", (c) =>
   c.json({
     name: "Restate + Hono appointment backend",
     health: "/health",
     restateEndpoint: "/restate",
+    queueDashboard: queueDashboardPath,
     api: {
       createAppointment: "POST /api/appointments",
       getAppointment: "GET /api/appointments/:id",
@@ -46,6 +56,7 @@ app.get("/health", (c) =>
     restateRuntimeUrl,
     restateAuthConfigured: Boolean(restateAuthToken),
     publicRestateEndpoint,
+    queueDashboard: queueDashboardPath,
   }),
 );
 
@@ -56,11 +67,23 @@ app.post("/api/appointments", async (c) => {
     id: z.string().min(1).optional(),
   }).parse(body);
 
-  const appointmentId = payload.id ?? crypto.randomUUID();
+  const baseAppointmentId = payload.id ?? crypto.randomUUID();
   const { id: _id, ...appointmentInput } = payload;
-  const appointment = await appointmentClient(appointmentId).create(appointmentInput);
+  const appointments = [];
 
-  return c.json(appointment, 201);
+  for (let index = 1; index <= appointmentsPerCreateRequest; index += 1) {
+    const appointmentId = `${baseAppointmentId}-${String(index).padStart(3, "0")}`;
+    const appointment = await appointmentClient(appointmentId).create(appointmentInput);
+    appointments.push(appointment);
+  }
+
+  return c.json(
+    {
+      count: appointments.length,
+      appointments,
+    },
+    201,
+  );
 });
 
 app.get("/api/appointments/:id", async (c) => {
@@ -106,7 +129,29 @@ function stripRestatePrefix(request: Request) {
   return new Request(url, request);
 }
 
+function createQueueDashboard(basePath: string) {
+  const serverAdapter = new HonoAdapter(serveStatic);
+  serverAdapter.setBasePath(basePath);
+
+  createBullBoard({
+    queues: [
+      new BullMQAdapter(appointmentEmailQueue, {
+        description: "Appointment reminder email jobs",
+      }),
+    ],
+    serverAdapter,
+    options: {
+      uiConfig: {
+        boardTitle: "Appointment Email Queue",
+      },
+    },
+  });
+
+  return serverAdapter.registerPlugin();
+}
+
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`Hono API listening on http://localhost:${info.port}`);
   console.log(`Register Restate endpoint: ${publicRestateEndpoint}`);
+  console.log(`BullMQ dashboard: http://localhost:${info.port}${queueDashboardPath}`);
 });
